@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Three.js 書本式幾何排版與互動</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000000; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script> 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
+
+    <script>
+        // 全域變數
+        let scene, camera, renderer, controls, gui, raycaster, mouse;
+        let objectGroup = new THREE.Group(); // 所有幾何圖形容器
+
+        // 視覺參數設定物件
+        const settings = {
+            gridSize: 10,      // 每行/列的圖形數量 (例如 10x10)
+            spacing: 3.0,      // 圖形間距
+            shapeSize: 0.5,    // 圖形基礎大小
+            maxJumpHeight: 2.0, // 滑鼠互動時最大跳起高度
+            hoverRadius: 1.5,   // 滑鼠互動影響半徑
+            lineColor: '#00ffff',
+            driftSpeed: 0.005,  // 左右飄移速度
+            cameraZ: 25,       // 攝影機初始位置
+            updateShapes: () => createAllShapes() // 更新結構按鈕
+        };
+
+        const shapes = []; // 用於儲存所有幾何形狀及其初始位置、材質
+        const shapeTypes = ['star', 'square', 'circle', 'triangle']; // 幾何形狀列表
+        
+        // --- 初始化函式 ---
+        function init() {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000); 
+            camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+            camera.position.z = settings.cameraZ;
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(width, height); 
+            document.body.appendChild(renderer.domElement);
+
+            // 設置 Raycasting (用於滑鼠互動)
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+            window.addEventListener('mousemove', onMouseMove, false);
+            
+            // 創建所有幾何形狀
+            createAllShapes();
+            scene.add(objectGroup);
+
+            // 設置滑鼠控制 (OrbitControls)
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // 設置 GUI
+            setupGUI();
+
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        // --- 幾何體生成工具函式 ---
+
+        function createStarGeometry(size) {
+            const vertices = [];
+            const outerR = size;
+            const innerR = size * 0.5;
+            const points = 5;
+            const step = Math.PI / points;
+
+            for (let i = 0; i < points * 2; i++) {
+                const radius = i % 2 === 0 ? outerR : innerR;
+                const angle = i * step + Math.PI / 2;
+                vertices.push(radius * Math.cos(angle), radius * Math.sin(angle), 0);
+            }
+            vertices.push(vertices[0], vertices[1], vertices[2]);
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            return geometry;
+        }
+
+        function createSquareGeometry(size) {
+            const vertices = new Float32Array([
+                -size,  size, 0, 
+                -size, -size, 0, 
+                 size, -size, 0, 
+                 size,  size, 0, 
+                -size,  size, 0  
+            ]);
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            return geometry;
+        }
+
+        function createCircleGeometry(size, segments = 32) {
+            const points = [];
+            for (let i = 0; i <= segments; i++) {
+                const angle = (i / segments) * Math.PI * 2;
+                points.push(new THREE.Vector3(size * Math.cos(angle), size * Math.sin(angle), 0));
+            }
+            // 使用 LineLoop 或 Line 會根據需求調整，這裡用 Line 且最後閉合
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            return geometry;
+        }
+
+        function createTriangleGeometry(size) {
+            const vertices = new Float32Array([
+                 0,  size, 0, 
+                -size, -size, 0, 
+                 size, -size, 0, 
+                 0,  size, 0 
+            ]);
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            return geometry;
+        }
+
+        function getGeometry(type, size) {
+            switch(type) {
+                case 'star': return createStarGeometry(size);
+                case 'square': return createSquareGeometry(size);
+                case 'circle': return createCircleGeometry(size);
+                case 'triangle': return createTriangleGeometry(size);
+                default: return createSquareGeometry(size);
+            }
+        }
+
+        // --- 創建所有幾何形狀並排版 ---
+        function createAllShapes() {
+            // 清理舊的群組
+            objectGroup.children.forEach(child => child.geometry.dispose());
+            objectGroup.clear();
+            shapes.length = 0; // 清空 shapes 數組
+
+            const material = new THREE.LineBasicMaterial({ color: new THREE.Color(settings.lineColor) });
+            const halfGrid = settings.gridSize * settings.spacing / 2;
+
+            for (let i = 0; i < settings.gridSize; i++) {
+                for (let j = 0; j < settings.gridSize; j++) {
+                    // 隨機選擇形狀
+                    const type = shapeTypes[Math.floor(Math.random() * shapeTypes.length)];
+                    const geometry = getGeometry(type, settings.shapeSize);
+
+                    const line = new THREE.Line(geometry, material);
+                    
+                    // 像書中文字一樣排排站好 (矩形網格)
+                    const initialX = (i * settings.spacing) - halfGrid + (settings.spacing / 2);
+                    const initialY = (j * settings.spacing) - halfGrid + (settings.spacing / 2);
+                    
+                    line.position.set(initialX, initialY, 0);
+
+                    // 儲存形狀的原始數據
+                    shapes.push({
+                        mesh: line,
+                        initialPos: new THREE.Vector3(initialX, initialY, 0),
+                        type: type,
+                        row: i, // 用於左右飄移
+                        hoverTime: 0 // 用於跳起動畫
+                    });
+                    
+                    objectGroup.add(line);
+                }
+            }
+        }
+
+        // --- 滑鼠互動函式 ---
+        function onMouseMove(event) {
+            // 將滑鼠座標轉換為標準化設備座標 (NDC) [-1 to 1]
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = - (event.clientY / window.innerHeight) * 2 + 1;
+        }
+
+        function updateHoverEffect(time) {
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(objectGroup.children);
+            let closestIntersect = null;
+
+            if (intersects.length > 0) {
+                // 找到最近的交點
+                closestIntersect = intersects[0];
+            }
+
+            shapes.forEach(shape => {
+                const mesh = shape.mesh;
+                const pos = mesh.position;
+                
+                // 1. 左右飄移 (像文字一樣)
+                const driftAmount = Math.sin(time * settings.driftSpeed + shape.row) * 0.5;
+                // 讓一半向左飄，一半向右飄 (根據行數 row)
+                if (shape.row % 2 === 0) {
+                    pos.x = shape.initialPos.x + driftAmount;
+                } else {
+                    pos.x = shape.initialPos.x - driftAmount;
+                }
+                pos.y = shape.initialPos.y; // Y 軸不飄移
+
+                // 2. 滑鼠跳起效果 (像被打亂一樣)
+                let distance = Infinity;
+                if (closestIntersect) {
+                    // 計算圖形中心與滑鼠光標在 Z=0 平面的距離
+                    distance = pos.distanceTo(closestIntersect.point);
+                }
+
+                if (distance < settings.hoverRadius) {
+                    // 如果在影響範圍內，增加 hoverTime
+                    shape.hoverTime += 0.05;
+                } else {
+                    // 如果不在影響範圍內，減少 hoverTime (恢復)
+                    shape.hoverTime = Math.max(0, shape.hoverTime - 0.03);
+                }
+
+                // 根據 hoverTime 設置 Z 軸位置 (跳起)
+                // 使用 Math.sin 函數讓跳起效果更平滑和具有彈性
+                const zOffset = Math.sin(shape.hoverTime) * settings.maxJumpHeight;
+                // 僅當 hoverTime > 0.01 時才設置 Z 軸，避免微小抖動
+                if (shape.hoverTime > 0.01) {
+                    pos.z = zOffset;
+                } else {
+                    pos.z = 0; // 恢復到平面
+                }
+                
+                // 額外旋轉 (讓跳起的圖形看起來更被打亂)
+                mesh.rotation.z = zOffset * 0.5;
+            });
+        }
+
+        // --- GUI 設置函式 ---
+        function setupGUI() {
+            gui = new dat.GUI();
+
+            const layoutFolder = gui.addFolder('幾何排版與大小');
+            layoutFolder.add(settings, 'gridSize', 5, 20).step(1).name('網格大小 (N x N)');
+            layoutFolder.add(settings, 'spacing', 1.0, 5.0).step(0.1).name('圖形間距');
+            layoutFolder.add(settings, 'shapeSize', 0.1, 1.5).step(0.05).name('圖形大小');
+            layoutFolder.addColor(settings, 'lineColor').name('線條顏色').onChange(() => {
+                const newColor = new THREE.Color(settings.lineColor);
+                shapes.forEach(s => s.mesh.material.color.set(newColor));
+            });
+            layoutFolder.add(settings, 'updateShapes').name('🚩 更新排版結構');
+            layoutFolder.open();
+
+            const animFolder = gui.addFolder('動畫與互動');
+            animFolder.add(settings, 'driftSpeed', 0.0001, 0.02).step(0.0001).name('飄移速度');
+            animFolder.add(settings, 'maxJumpHeight', 0.5, 5.0).step(0.1).name('最大跳起高度');
+            animFolder.add(settings, 'hoverRadius', 0.5, 5.0).step(0.1).name('滑鼠影響半徑');
+            animFolder.open();
+        }
+
+        // --- 視窗調整與動畫循環函式 ---
+
+        function onWindowResize() {
+            const newWidth = window.innerWidth;
+            const newHeight = window.innerHeight;
+            camera.aspect = newWidth / newHeight;
+            camera.updateProjectionMatrix(); 
+            renderer.setSize(newWidth, newHeight);
+        }
+
+        function animate(time) {
+            requestAnimationFrame(animate);
+
+            // 更新滑鼠控制
+            controls.update(); 
+
+            // 更新左右飄移和滑鼠互動效果
+            updateHoverEffect(time);
+
+            // 渲染場景
+            renderer.render(scene, camera);
+        }
+
+        // 啟動程式
+        init();
+        animate(0); 
+    </script>
+</body>
+</html>
